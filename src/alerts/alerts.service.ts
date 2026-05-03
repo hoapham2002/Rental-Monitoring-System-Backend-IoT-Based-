@@ -45,8 +45,19 @@ export class AlertsService {
  
     // Apply filters từ query params
     if (query.resolved !== undefined) filter.resolved = query.resolved;
+    // const rawResolved = (query as any).resolved;
+    // if (rawResolved === 'true' || rawResolved === true) {
+    //   filter.resolved = true;
+    // } else if (rawResolved === 'false' || rawResolved === false) {
+    //   filter.resolved = false;
+    // }
     if (query.type) filter.type = query.type;
     if (query.severity) filter.severity = query.severity;
+
+    console.log('RAW QUERY:', query);
+    console.log('TYPE OF resolved:', typeof query.resolved);
+    console.log('VALUE OF resolved:', query.resolved);
+    console.log('FINAL FILTER:', filter);
  
     const limit = query.limit ?? 20;
  
@@ -55,7 +66,7 @@ export class AlertsService {
       this.alertModel.countDocuments(filter),
       this.alertModel.countDocuments({ ...filter, resolved: false }),
     ]);
- 
+
     return { data, total, unresolved };
   }
  
