@@ -1,0 +1,15 @@
+{
+  "name": "iot-gateway-script",
+  "version": "1.0.0",
+  "description": "IoT Gateway Script for Rental Monitoring System",
+  "main": "gateway.js",
+  "scripts": {
+    "start": "node gateway.js",
+    "dev": "node gateway.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "serialport": "^12.0.0",
+    "socket.io-client": "^4.7.5"
+  }
+}

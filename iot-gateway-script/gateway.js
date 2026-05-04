@@ -128,20 +128,28 @@ function parseLine(line) {
  
 // ── Handle incoming serial data ───────────────────────────────────────────────
 async function handleSerialData(line) {
-  const parsed = parseLine(line);
+  const rawLine = line.toString().trim();
+  if (!rawLine) return;
+ 
+  log('INFO', `Raw Serial Data Received: "${rawLine}"`);
+ 
+  const parsed = parseLine(rawLine);
   if (!parsed) {
-    log('WARN', `Unrecognised serial data: "${line}"`);
+    log('WARN', `Unrecognised format (Expected ID:VALUE). Received: "${rawLine}"`);
     return;
   }
  
   const { deviceId, value } = parsed;
-  log('INFO', `Serial → device=${deviceId} value=${value}`);
+  log('INFO', `Valid Data → device=${deviceId} value=${value}`);
  
   try {
     const result = await postToBackend(deviceId, value);
     log('OK', `Backend ACK → ${deviceId}:${value}`, `alert_created=${result.alert_created}`);
   } catch (err) {
-    log('ERROR', `Failed to POST ${deviceId}:${value}`, err.message);
+    log('ERROR', `Failed to POST ${deviceId}:${value} to Backend`, err.message);
+    if (err.message.includes('404')) {
+      log('WARN', `Gợi ý: Có thể ID "${deviceId}" chưa có trong DB. Hãy chạy "npm run seed" ở backend.`);
+    }
   }
 }
  
