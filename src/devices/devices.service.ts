@@ -157,6 +157,42 @@ export class DevicesService {
       alertCreated = true;
       this.logger.warn(`🔐 PASSWORD_FAIL on device ${dto.deviceId}`);
     }
+
+    // 4c. Xử lý MOTION_ON — PIR motion alert
+    if (dto.value === 'MOTION_ON') {
+      const alert = await this.alertModel.create({
+        device_id: dto.deviceId,
+        room_id: device.room_id,
+        type: 'security',
+        severity: 'info',
+        message: `🚶 Phát hiện chuyển động tại phòng ${device.room_id}`,
+        resolved: false,
+        ts,
+      });
+
+      // 5b. Emit realtime
+      this.gateway.emitAlert(device.room_id.toString(), {
+        alertId: (alert._id as Types.ObjectId).toString(),
+        type: 'security',
+        severity: 'info',
+        message: alert.message,
+        device_id: dto.deviceId,
+        room_id: device.room_id.toString(),
+        ts,
+      });
+
+      // Enqueue notification
+      this.notificationsService.notifyAlert({
+        alertId: (alert._id as Types.ObjectId).toString(),
+        roomId: device.room_id.toString(),
+        type: 'security',
+        severity: 'info',
+        message: alert.message,
+      }).catch((err) => this.logger.error('Failed to enqueue motion notification', err));
+
+      alertCreated = true;
+      this.logger.log(`🚶 MOTION_ON on device ${dto.deviceId}`);
+    }
  
     // 5c. Emit device state update cho FE dashboard (tất cả events)
     this.gateway.emitDeviceUpdate(device.room_id.toString(), {
