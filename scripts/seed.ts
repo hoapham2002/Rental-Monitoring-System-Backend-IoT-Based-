@@ -56,6 +56,7 @@ async function seed() {
     { _id: 'LOCK_101' as any,  room_id: room101Id, type: 'lock',        password_hash: HASH, status: 'online',  last_state: 'LOCKED', last_seen: new Date() },
     { _id: 'LIGHT_101' as any, room_id: room101Id, type: 'light',       password_hash: null, status: 'online',  last_state: 'OFF',    last_seen: new Date() },
     { _id: 'FIRE_101' as any,  room_id: room101Id, type: 'fire_sensor', password_hash: null, status: 'online',  last_state: 'NORMAL', last_seen: new Date() },
+    { _id: 'METER_101' as any, room_id: room101Id, type: 'meter',        password_hash: null, status: 'online',  last_state: 'E:10.5|W:5.2', last_seen: new Date() },
     { _id: 'LOCK_102' as any,  room_id: room102Id, type: 'lock',        password_hash: HASH, status: 'online',  last_state: 'LOCKED', last_seen: new Date() },
     { _id: 'FIRE_102' as any,  room_id: room102Id, type: 'fire_sensor', password_hash: null, status: 'offline', last_state: 'NORMAL', last_seen: new Date(Date.now() - 3_600_000) },
   ]);
