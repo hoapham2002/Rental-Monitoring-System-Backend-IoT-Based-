@@ -19,22 +19,22 @@ import {
 } from '../common/schemas';
 import { CreateBillDto, GetBillsQueryDto } from './dto/bills.dto';
 import { NotificationsService } from '../notifications/notifications.service';
- 
+
 // Đơn giá (VNĐ)
 const ELECTRICITY_PRICE_PER_KWH = 3_500;
-const WATER_PRICE_PER_M3        = 15_000;
- 
+const WATER_PRICE_PER_M3 = 15_000;
+
 @Injectable()
 export class BillsService {
   private readonly logger = new Logger(BillsService.name);
- 
+
   constructor(
     @InjectModel(Bill.name) private readonly billModel: Model<BillDocument>,
     @InjectModel(Room.name) private readonly roomModel: Model<RoomDocument>,
     @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
     private readonly notificationsService: NotificationsService,
-  ) {}
- 
+  ) { }
+
   // ══════════════════════════════════════════════════════════════════════════
   // POST /bills — tạo hóa đơn (Owner only)
   // ══════════════════════════════════════════════════════════════════════════
@@ -42,47 +42,71 @@ export class BillsService {
     if (!Types.ObjectId.isValid(dto.room_id)) {
       throw new BadRequestException('room_id không hợp lệ.');
     }
- 
+
     // 1. Validate phòng tồn tại + Owner sở hữu phòng này
     const room = await this.roomModel.findById(dto.room_id).lean();
     if (!room) throw new NotFoundException(`Phòng ${dto.room_id} không tồn tại.`);
     if ((room as any).owner_id.toString() !== ownerId) {
       throw new ForbiddenException('Bạn không có quyền tạo hóa đơn cho phòng này.');
     }
- 
+
     // 2. Phòng phải đang có tenant
     if (!(room as any).current_tenant_id) {
       throw new BadRequestException('Phòng chưa có tenant, không thể tạo hóa đơn.');
     }
- 
+
     // 3. Lấy thông tin tenant để snapshot
     const tenant = await this.userModel
       .findById((room as any).current_tenant_id)
       .select('name phone')
       .lean();
     if (!tenant) throw new NotFoundException('Không tìm thấy tenant hiện tại của phòng.');
- 
-    // 4. Tính tổng tiền
+
+    // 4. TỰ ĐỘNG LẤY CHỈ SỐ TỪ THIẾT BỊ (Smart Meter)
+    const Device = this.roomModel.db.model('Device');
+    const meterDevice = await Device.findOne({ room_id: room._id, type: 'meter' }).lean();
+
+    let current_e = dto.electricity_index;
+    let current_w = dto.water_index;
+
+    if (meterDevice && (meterDevice as any).last_state) {
+      // Parse format "E:10.50|W:5.200"
+      const state = (meterDevice as any).last_state as string;
+      this.logger.debug(`Raw state from DB: "${state}"`);
+
+      // Chấp nhận cả dấu : hoặc _ để linh hoạt hơn
+      const eMatch = state.match(/E[:_]([\d.]+)/);
+      const wMatch = state.match(/W[:_]([\d.]+)/);
+
+      if (eMatch) current_e = parseFloat(eMatch[1]);
+      if (wMatch) current_w = parseFloat(wMatch[1]);
+
+      this.logger.log(`Tự động lấy chỉ số từ ${(meterDevice as any)._id}: E=${current_e}, W=${current_w}`);
+    } else {
+      this.logger.warn(`Không tìm thấy thiết bị đo (meter) cho phòng ${room._id}. Sử dụng chỉ số mặc định từ DTO.`);
+    }
+
+    // 5. Tính tổng tiền
     const total_amount =
       (room as any).base_price +
-      dto.electricity_index * ELECTRICITY_PRICE_PER_KWH +
-      dto.water_index * WATER_PRICE_PER_M3;
- 
-    // 5. Tạo bill — MongoDB unique index tự chặn trùng tháng/phòng
+      current_e * ELECTRICITY_PRICE_PER_KWH +
+      current_w * WATER_PRICE_PER_M3;
+
+    // 6. Tạo bill — MongoDB unique index tự chặn trùng tháng/phòng
     let bill: BillDocument;
     try {
       bill = await this.billModel.create({
-        room_id:                new Types.ObjectId(dto.room_id),
-        tenant_id:              (room as any).current_tenant_id,
-        tenant_name_snapshot:   (tenant as any).name,
-        tenant_phone_snapshot:  (tenant as any).phone ?? '',
-        month:                  dto.month,
-        year:                   dto.year,
-        electricity_index:      dto.electricity_index,
-        water_index:            dto.water_index,
+        room_id: new Types.ObjectId(dto.room_id),
+        tenant_id: (room as any).current_tenant_id,
+        tenant_name_snapshot: (tenant as any).name,
+        tenant_phone_snapshot: (tenant as any).phone ?? '',
+        month: dto.month,
+        year: dto.year,
+        electricity_index: current_e,
+        water_index: current_w,
         total_amount,
-        status:                 'unpaid',
-        paid_at:                null,
+        status: 'unpaid',
+        paid_at: null,
       });
     } catch (err: any) {
       // MongoDB error code 11000 = duplicate key (unique index violation)
@@ -93,32 +117,32 @@ export class BillsService {
       }
       throw err;
     }
- 
+
     // 6. Enqueue notification cho tenant — KHÔNG await (fire-and-forget)
     this.notificationsService.notifyBill({
-      billId:      (bill._id as Types.ObjectId).toString(),
-      roomId:      dto.room_id,
-      tenantId:    (room as any).current_tenant_id.toString(),
-      month:       dto.month,
-      year:        dto.year,
+      billId: (bill._id as Types.ObjectId).toString(),
+      roomId: dto.room_id,
+      tenantId: (room as any).current_tenant_id.toString(),
+      month: dto.month,
+      year: dto.year,
       totalAmount: total_amount,
     }).catch((err) =>
       this.logger.error('Failed to enqueue bill notification', err),
     );
- 
+
     this.logger.log(
       `Bill created: phòng ${dto.room_id} tháng ${dto.month}/${dto.year} — ${total_amount.toLocaleString('vi-VN')}đ`,
     );
- 
+
     return bill;
   }
- 
+
   // ══════════════════════════════════════════════════════════════════════════
   // GET /bills — Owner/Admin xem danh sách
   // ══════════════════════════════════════════════════════════════════════════
   async getBills(query: GetBillsQueryDto, userRole: string, userId: string) {
     const filter: Record<string, unknown> = {};
- 
+
     if (userRole === 'owner') {
       // Chỉ lấy bills của phòng thuộc owner này
       const ownerRooms = await this.roomModel
@@ -127,7 +151,7 @@ export class BillsService {
         .lean();
       const roomIds = ownerRooms.map((r: any) => r._id);
       filter.room_id = { $in: roomIds };
- 
+
       // Override nếu có filter room_id cụ thể
       if (query.room_id) {
         const isOwned = roomIds.some((id: any) => id.toString() === query.room_id);
@@ -137,17 +161,17 @@ export class BillsService {
     } else if (userRole === 'admin') {
       if (query.room_id) filter.room_id = new Types.ObjectId(query.room_id);
     }
- 
-    if (query.month)  filter.month  = query.month;
-    if (query.year)   filter.year   = query.year;
+
+    if (query.month) filter.month = query.month;
+    if (query.year) filter.year = query.year;
     if (query.status) filter.status = query.status;
- 
+
     return this.billModel
       .find(filter)
       .sort({ year: -1, month: -1 })
       .lean();
   }
- 
+
   // ══════════════════════════════════════════════════════════════════════════
   // GET /bills/my-bill — Tenant xem hóa đơn của mình
   // ══════════════════════════════════════════════════════════════════════════
@@ -155,17 +179,17 @@ export class BillsService {
     const filter: Record<string, unknown> = {
       tenant_id: new Types.ObjectId(tenantId),
     };
- 
-    if (query.month)  filter.month  = query.month;
-    if (query.year)   filter.year   = query.year;
+
+    if (query.month) filter.month = query.month;
+    if (query.year) filter.year = query.year;
     if (query.status) filter.status = query.status;
- 
+
     return this.billModel
       .find(filter)
       .sort({ year: -1, month: -1 })
       .lean();
   }
- 
+
   // ══════════════════════════════════════════════════════════════════════════
   // PATCH /bills/:id/status — xác nhận thanh toán (Owner only)
   // Atomic update: $ne guard tránh ghi đè paid_at nếu bấm 2 lần
@@ -174,49 +198,49 @@ export class BillsService {
     if (!Types.ObjectId.isValid(billId)) {
       throw new BadRequestException('bill_id không hợp lệ.');
     }
- 
+
     // Validate bill tồn tại và thuộc owner
     const bill = await this.billModel.findById(billId).lean();
     if (!bill) throw new NotFoundException(`Bill ${billId} không tồn tại.`);
- 
+
     const room = await this.roomModel.findById((bill as any).room_id).lean();
     if (!room) throw new NotFoundException('Phòng không tồn tại.');
     if ((room as any).owner_id.toString() !== ownerId) {
       throw new ForbiddenException('Bạn không có quyền xác nhận hóa đơn này.');
     }
- 
+
     if ((bill as any).status === 'paid') {
       throw new ConflictException('Hóa đơn này đã được thanh toán rồi.');
     }
- 
+
     // ATOMIC UPDATE — $ne: 'paid' là guard chính, tránh race condition
     const updated = await this.billModel.findOneAndUpdate(
       {
-        _id:    new Types.ObjectId(billId),
+        _id: new Types.ObjectId(billId),
         status: { $ne: 'paid' },   // chỉ update nếu chưa paid
       },
       {
         $set: {
-          status:  'paid',
+          status: 'paid',
           paid_at: new Date(),
         },
       },
       { new: true },
     );
- 
+
     if (!updated) {
       throw new ConflictException('Hóa đơn đã được thanh toán (concurrent update).');
     }
- 
+
     this.logger.log(`Bill ${billId} confirmed paid at ${updated.paid_at}`);
- 
+
     return {
-      ok:       true,
-      bill:     updated,
-      paid_at:  updated.paid_at,
+      ok: true,
+      bill: updated,
+      paid_at: updated.paid_at,
     };
   }
- 
+
   // ══════════════════════════════════════════════════════════════════════════
   // CRON JOB — Task 4.3
   // Chạy lúc 00:00 ngày 25 hàng tháng
@@ -226,27 +250,27 @@ export class BillsService {
   async sendBillReminders(): Promise<void> {
     const now = new Date();
     this.logger.log(`[Cron] Running bill reminder — ${now.toISOString()}`);
- 
+
     const unpaidBills = await this.billModel
       .find({ status: 'unpaid' })
       .lean();
- 
+
     if (unpaidBills.length === 0) {
       this.logger.log('[Cron] No unpaid bills found.');
       return;
     }
- 
+
     this.logger.log(`[Cron] Found ${unpaidBills.length} unpaid bills. Enqueueing reminders...`);
- 
+
     let enqueued = 0;
     for (const bill of unpaidBills) {
       try {
         await this.notificationsService.notifyBill({
-          billId:      (bill._id as Types.ObjectId).toString(),
-          roomId:      (bill as any).room_id.toString(),
-          tenantId:    (bill as any).tenant_id.toString(),
-          month:       (bill as any).month,
-          year:        (bill as any).year,
+          billId: (bill._id as Types.ObjectId).toString(),
+          roomId: (bill as any).room_id.toString(),
+          tenantId: (bill as any).tenant_id.toString(),
+          month: (bill as any).month,
+          year: (bill as any).year,
           totalAmount: (bill as any).total_amount,
         });
         enqueued++;
@@ -257,7 +281,7 @@ export class BillsService {
         );
       }
     }
- 
+
     this.logger.log(`[Cron] Bill reminders enqueued: ${enqueued}/${unpaidBills.length}`);
   }
 }
